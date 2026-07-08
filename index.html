@@ -691,8 +691,17 @@ measurementId: "G-MV89HMSQFD"
     const db = firebase.firestore();
 
     let currentUserProfile = null;
-    let currentDriverContextId = null; 
+    let currentDriverContextId = null;
     let isRegisterMode = false;
+    let pendingRegistration = null;
+
+    function activateUserProfile(profile) {
+        currentUserProfile = profile;
+        document.getElementById('roleBadge').innerText = currentUserProfile.role;
+        document.getElementById('userNameDisplay').innerText = currentUserProfile.displayName;
+        configureInterfaceRoles();
+        loadUserProfileData();
+    }
 
     let tripsUnsubscribe = null;
     let expensesUnsubscribe = null;
@@ -760,6 +769,7 @@ measurementId: "G-MV89HMSQFD"
                 authErrorDisplay.innerText = "Please fill out your complete name.";
                 return;
             }
+            pendingRegistration = { displayName: displayName, role: role };
             firebase.auth().createUserWithEmailAndPassword(email, password)
                 .then((cred) => {
                     return db.collection('users').doc(cred.user.uid).set({
@@ -769,7 +779,10 @@ measurementId: "G-MV89HMSQFD"
                         role: role
                     });
                 })
-                .catch(err => authErrorDisplay.innerText = err.message);
+                .catch(err => {
+                    pendingRegistration = null;
+                    authErrorDisplay.innerText = err.message;
+                });
         } else {
             firebase.auth().signInWithEmailAndPassword(email, password)
                 .catch(err => authErrorDisplay.innerText = err.message);
@@ -780,16 +793,28 @@ measurementId: "G-MV89HMSQFD"
         if (user) {
             db.collection('users').doc(user.uid).get().then(doc => {
                 if (doc.exists) {
-                    currentUserProfile = doc.data();
-                    document.getElementById('roleBadge').innerText = currentUserProfile.role;
-                    document.getElementById('userNameDisplay').innerText = currentUserProfile.displayName;
-                    
-                    configureInterfaceRoles();
-                    loadUserProfileData();
+                    activateUserProfile(doc.data());
                 } else {
-                    alert("User identity matrix missing from ledger database.");
-                    firebase.auth().signOut();
+                    // Profile doc missing: create it instead of signing the user out.
+                    // Happens on registration (auth fires before Firestore write finishes)
+                    // or for accounts created without a profile document.
+                    const profile = {
+                        uid: user.uid,
+                        email: (user.email || "").toLowerCase(),
+                        displayName: (pendingRegistration && pendingRegistration.displayName) || user.displayName || (user.email ? user.email.split('@')[0] : "User"),
+                        role: (pendingRegistration && pendingRegistration.role) || 'driver'
+                    };
+                    pendingRegistration = null;
+                    db.collection('users').doc(user.uid).set(profile)
+                        .then(() => activateUserProfile(profile))
+                        .catch(err => {
+                            alert("Could not create your user profile: " + err.message);
+                            firebase.auth().signOut();
+                        });
                 }
+            }).catch(err => {
+                alert("Could not load your user profile: " + err.message);
+                firebase.auth().signOut();
             });
         } else {
             currentUserProfile = null;
